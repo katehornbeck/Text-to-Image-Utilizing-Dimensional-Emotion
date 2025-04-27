@@ -85,8 +85,6 @@ class GigaGAN(nn.Module):
             kwargs = DistributedDataParallelKwargs(find_unused_parameters = find_unused_parameters)
 
             self.accelerator = Accelerator(
-                device_placement = False,
-                cpu = True,
                 kwargs_handlers = [kwargs],
                 mixed_precision = mixed_precision_type if amp else 'no',
                 split_batches = True,
@@ -706,8 +704,6 @@ class GigaGAN(nn.Module):
         all_images = []
         all_texts = []
 
-        torch.cuda.empty_cache()
-
         for _ in range(grad_accum_every):
 
             # generator
@@ -792,16 +788,7 @@ class GigaGAN(nn.Module):
 
         # generator optimizer step
 
-        torch.cuda.empty_cache()
-
-        #for squeeze_excite, (resnet_conv1, noise1, act1, resnet_conv2, noise2, act2), to_rgb_conv, self_attn, cross_attn, upsample, upsample_rgb in self.G.layers:
-        #    torch.cuda.empty_cache()
-
-
         self.G_opt.step()
-        torch.cuda.empty_cache()
-        
-        torch.nn.utils.clip_grad_norm_(self.G.parameters(), max_norm=1.0)
 
         # update exponentially moving averaged generator
 
