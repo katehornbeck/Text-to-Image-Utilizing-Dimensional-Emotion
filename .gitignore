@@ -3,4 +3,5 @@ csv_result/
 data/
 env
 .ipynb_checkpoints
-src/models/__pycache__
+**/__pycache__/** */
+src/inference

@@ -6,15 +6,15 @@ from transformers import (
     RobertaConfig
 )
 
-from data.loaders import (
+from src.data.loaders import (
     EmobankLoader, 
     SemEvalLoader
 )
 
-from data.datasets import EmotionDataset
+from src.data.datasets import EmotionDataset
 
-from models.model import PretrainedLMModel
-from models.trainer import Trainer
+from src.models.vad.model import PretrainedLMModel
+from src.models.vad.trainer import Trainer
 
 import argparse
 from argparse import ArgumentParser
@@ -56,6 +56,19 @@ class SingleDatasetTrainer():
         self.trainer = Trainer(args)
         self.device = self.trainer.args.device
         self.coef_step =0
+        self.model = None
+        self.tokenizer = None
+
+        self.tokenizer = None
+        self.train_loader = None
+        self.valid_loader = None
+        self.test_loader = None
+        self.optimizer = None
+        self.lr_scheduler = None
+        self.lr_switch = None
+        self.eb_train_loader = None
+        self.eb_valid_loader = None
+        self.eb_test_loader = None
 
         print('SingleDatasetTrainer created')
 
@@ -67,6 +80,10 @@ class SingleDatasetTrainer():
         assert args.label_type in ['categorical', 'dimensional']
         assert args.optimizer_type in ['legacy', 'trans']
 
+    def output_args(self):
+        print(f'task: {self.args.task}\nmodel: {self.args.model}\ndataset: {self.args.dataset} \
+              \nload_model: {self.args.load_model}\nlabel_type: {self.args.label_type} \
+              \noptimizer_type: {self.args.optimizer_type}')
 
     def _set_model_args(self):
         if self.args.model == 'roberta':
@@ -94,6 +111,7 @@ class SingleDatasetTrainer():
         tokenizer = Tokenizer.from_pretrained(
             model_name, 
             cache_dir=cache_path+'/vocab/')
+        self.tokenizer = tokenizer
         return tokenizer
 
 
@@ -272,8 +290,8 @@ class SingleDatasetTrainer():
     def load_model_from_ckeckpoint(self, n_updates, n_epoch, model, optimizer):
         # 1. set path and load states
         ckpt_name = "-".join([
-            self.args.load_dataset, 
-            self.args.load_task,
+            self.args.dataset, 
+            self.args.task,
             str(n_updates),
             str(n_epoch)]) + ".ckpt"
         save_path = self.args.save_dir + ckpt_name
@@ -291,21 +309,20 @@ class SingleDatasetTrainer():
         if self.args.load_optimizer:
             optimizer.load_state_dict(state['optimizer'])
 
-        self.n_updates = 0 # renewed
-        self.n_epoch = 0 # renewed
+        self.n_updates = n_updates 
+        self.n_epoch = n_epoch 
 
         print("Loading Model from:", save_path, "...Finished.")
         return model, optimizer
 
-
-    def train(self):
+    def setup(self):
         # 1. build dataset for train/valid/test
         print("Build dataset for train/valid/test", flush=True)
-        tokenizer = self.load_tokenizer()
+        self.tokenizer = self.load_tokenizer()
         print("Building datasets")
-        dataset = self.dataset.build_datasets(tokenizer)
+        dataset = self.dataset.build_datasets(self.tokenizer)
         print("Building dataloaders")
-        train_loader, valid_loader, test_loader = self.dataset.build_dataloaders(dataset)
+        self.train_loader, self.valid_loader, self.test_loader = self.dataset.build_dataloaders(dataset)
         print("Dataset Loaded:", self.args.dataset, "with labels:", self.dataset.load_label_names())
         
         if self.args.task == "vad-from-categories":
@@ -313,32 +330,50 @@ class SingleDatasetTrainer():
             args_ = argparse.Namespace(**vars(self.args))
             args_.dataset = 'emobank'
             d = EmotionDataset(args_)
-            dataset = d.build_datasets(tokenizer)
-            eb_train_loader, eb_valid_loader, eb_test_loader = d.build_dataloaders(dataset)
+            self.dataset = d.build_datasets(self.tokenizer)
+            self.eb_train_loader, self.eb_valid_loader, self.eb_test_loader = d.build_dataloaders(self.dataset)
             print("Dataset Loaded:", args_.dataset, "with labels:", d.load_label_names())
 
         # 2. build/load models
         print("build/load models", flush=True)
-        model, config = self.load_model()
-        optimizer, lr_scheduler = self.set_optimizer(model)
+        self.model, config = self.load_model()
+        self.optimizer, self.lr_scheduler = self.set_optimizer(self.model)
 
         self.set_train_vars()
         if self.args.load_ckeckpoint:
-            model, optimizer = self.load_model_from_ckeckpoint(
+            self.model, self.optimizer = self.load_model_from_ckeckpoint(
                 self.args.load_n_it, 
                 self.args.load_n_epoch, 
-                model, 
-                optimizer)
+                self.model, 
+                self.optimizer)
 
         if len(self.args.CUDA_VISIBLE_DEVICES.split(',')) > 1:
             device_list = self.args.CUDA_VISIBLE_DEVICES.split(',')
             print("Using %d GPUs now" % len(device_list))
             map_object = map(int, device_list)
             print("Using GPU list of", list(map_object))
-            model = torch.nn.DataParallel(model)
+            self.model = torch.nn.DataParallel(self.model)
 
-        optimizer.zero_grad()
-        lr_switch = 0
+        self.optimizer.zero_grad()
+        self.lr_switch = 0
+
+    def inference(self, text):
+
+        token_out = self.tokenizer(text)
+        input_ids = torch.tensor([token_out['input_ids']], dtype=torch.long, device=self.device)
+        attention_masks = torch.tensor([token_out['attention_mask']], dtype=torch.long, device=self.device)
+        
+        print(f'input_ids {input_ids}')
+        
+        lm_logits, cls_logits = self.model(                                      
+                    input_ids,
+                    attention_mask=attention_masks, 
+                    n_epoch=1)
+        print(f'lm_logits: {lm_logits}')
+        print(f'cls_logits: {cls_logits}')
+
+    def train(self):
+        self.setup()
 
         print(f'Starting to train')
         
@@ -346,21 +381,21 @@ class SingleDatasetTrainer():
 
             print(f'Epoch {self.n_epoch}')
 
-            for it, train_batch in enumerate(train_loader):
-                model.train() 
+            for it, train_batch in enumerate(self.train_loader):
+                self.model.train() 
                 if self.args.task == "vad-regression" and self.args.load_ckeckpoint is True:
                     if self.n_epoch < self.args.max_freeze_epoch:
-                        for para in model.parameters():
+                        for para in self.model.parameters():
                             para.requires_grad = False
-                        model.v_head.weight.requires_grad = True
-                        model.a_head.weight.requires_grad = True
-                        model.d_head.weight.requires_grad = True
+                        self.model.v_head.weight.requires_grad = True
+                        self.model.a_head.weight.requires_grad = True
+                        self.model.d_head.weight.requires_grad = True
                     else: 
-                        if self.n_epoch == self.args.max_freeze_epoch and lr_switch==0:
-                            for g in optimizer.param_groups:
+                        if self.n_epoch == self.args.max_freeze_epoch and self.lr_switch==0:
+                            for g in self.optimizer.param_groups:
                                 g['lr'] = self.args.learning_rate_unfreeze
-                            lr_switch = 1
-                        for para2 in model.parameters():
+                            self.lr_switch = 1
+                        for para2 in self.model.parameters():
                             para2.requires_grad = True
                 
 
@@ -370,7 +405,7 @@ class SingleDatasetTrainer():
 
                 # forward
                 print(f'Forward')
-                lm_logits, cls_logits = model(                                                 #[batch_size, n_labels]
+                lm_logits, cls_logits = self.model(                                                 #[batch_size, n_labels]
                     input_ids,
                     attention_mask=attention_masks, n_epoch=self.n_epoch)
 
@@ -383,11 +418,11 @@ class SingleDatasetTrainer():
                 self.accumulated_loss, self.n_updates = self.backward_step(
                     it, 
                     self.n_updates,
-                    model,
+                    self.model,
                     loss, 
                     self.accumulated_loss, 
-                    optimizer, 
-                    lr_scheduler)
+                    self.optimizer, 
+                    self.lr_scheduler)
                 
                 self.coef_step +=1
 
@@ -399,55 +434,36 @@ class SingleDatasetTrainer():
                         self.evaluate_save_result(
                             self.n_epoch,
                             self.csv_file_name,
-                            model, 
-                            valid_loader, 
-                            test_loader,
+                            self.model, 
+                            self.valid_loader, 
+                            self.test_loader,
                             prediction_type='cat')
                         self.evaluate_save_result(
                             self.n_epoch,
                             self.csv_file_name,
-                            model, 
-                            eb_valid_loader,
-                            eb_test_loader,
+                            self.model, 
+                            self.eb_valid_loader,
+                            self.eb_test_loader,
                             prediction_type='vad',
                             compute_loss=False)
                     elif self.args.task == 'vad-regression':
                         self.evaluate_save_result(
                             self.n_epoch,
                             self.csv_file_name,
-                            model, 
-                            valid_loader, 
-                            test_loader,
+                            self.model, 
+                            self.valid_loader, 
+                            self.test_loader,
                             prediction_type='vad')
                     else:
                         self.evaluate_save_result(
                             self.n_epoch,
                             self.csv_file_name,
-                            model, 
-                            valid_loader, 
-                            test_loader)
+                            self.model, 
+                            self.valid_loader, 
+                            self.test_loader)
                     
-                    if self.args.save_model:
-                        self.save_model(model, optimizer)
+                    if self.args.save_model and self.n_epoch % 5  == 0:
+                        self.save_model(self.model, self.optimizer)
 
                 if self.n_updates == self.args.total_n_updates: break
                 if self.n_epoch == self.args.max_epoch: break
-
-def main():
-    parser = ArgumentParser()
-    parser.add_argument('--config', default=None, type=str)
-    arg_ = parser.parse_args()
-    if arg_.config == None:
-        raise NameError("Include a config file in the argument please.")
-
-    #Getting configurations
-    with open(arg_.config) as config_file:
-        args = json.load(config_file)
-    args = argparse.Namespace(**args)
-
-    sdt = SingleDatasetTrainer(args)
-    sdt.train()
-
-
-if __name__ == "__main__":
-    main()

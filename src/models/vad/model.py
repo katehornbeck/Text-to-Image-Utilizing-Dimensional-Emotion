@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import torch.nn.functional as F
-from data.loaders import SemEvalLoader
+from src.data.loaders import SemEvalLoader
 import numpy as np
 
 from transformers import RobertaModel
