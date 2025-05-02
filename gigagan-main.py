@@ -12,21 +12,15 @@ encoder = TextEncoder(**text_encoder)
 
 gan = GigaGAN(
     generator = dict(
-        dim_capacity = 8,
         style_network = dict(
-            dim = 64,
-            depth = 4
+            dim = 4,
+            depth = 2
         ),
-        image_size = 256,
-        dim_max = 512,
-        num_skip_layers_excite = 4,
+        image_size = 32,
         text_encoder = encoder
     ),
     discriminator = dict(
-        dim_capacity = 16,
-        dim_max = 512,
-        image_size = 256,
-        num_skip_layers_excite = 4,
+        image_size = 32,
         text_encoder = encoder
     ),
     amp = True
@@ -36,12 +30,12 @@ from src.models.gigagan.data import TextImageDataset
 
 dataset = TextImageDataset(
     folder = '../datasets/laion2B-en-aesthetic',
-    image_size = 256
+    image_size = 32
 )
 dataloader = dataset.get_dataloader(batch_size = 1)
 gan.set_dataloader(dataloader)
 
 gan(
-    steps = 100,
-    grad_accum_every = 8
+    steps = 10,
+    grad_accum_every = 2
 )

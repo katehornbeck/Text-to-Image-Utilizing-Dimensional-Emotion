@@ -54,7 +54,7 @@ class GigaGAN(nn.Module):
         multiscale_divergence_loss_weight = 0.1,
         vision_aided_divergence_loss_weight = 0.5,
         generator_contrastive_loss_weight = 0.1,
-        matching_awareness_loss_weight = 0.1,
+        matching_awareness_loss_weight = 0.0,
         calc_multiscale_loss_every = 1,
         apply_gradient_penalty_every = 4,
         resize_image_mode = 'bilinear',
@@ -88,6 +88,7 @@ class GigaGAN(nn.Module):
                 kwargs_handlers = [kwargs],
                 mixed_precision = mixed_precision_type if amp else 'no',
                 split_batches = True,
+                gradient_accumulation_steps = 1,
                 **accelerate_kwargs
             )
 
@@ -167,16 +168,8 @@ class GigaGAN(nn.Module):
         self.D_opt = get_optimizer(self.D.parameters(), lr = learning_rate, betas = betas, weight_decay = weight_decay)
 
         # prepare for distributed
-
-        #self.G = torch.compile(self.G)
-        #self.G_opt = torch.compile(self.G_opt)
-
-       # self.G, self.G_opt, _, _ = deepspeed.initialize(model=self.G, config="ds_config.json")
-       # self.D, self.D_opt, _, _ = deepspeed.initialize(model=self.D, config="ds_config.json")
-
         self.G, self.D, self.G_opt, self.D_opt = self.accelerator.prepare(self.G, self.D, self.G_opt, self.D_opt)
-
-        
+      
 
         # vision aided discriminator optimizer
 
@@ -436,11 +429,11 @@ class GigaGAN(nn.Module):
         total_matching_aware_loss = 0.
 
         all_texts = []
-        all_fake_images = []
-        all_fake_rgbs = []
+        #all_fake_images = []
+        #all_fake_rgbs = []
         all_real_images = []
 
-        self.G.train()
+        self.G.eval()
         self.D.train()
 
         self.D_opt.zero_grad()
@@ -451,6 +444,8 @@ class GigaGAN(nn.Module):
             self.VD_opt.zero_grad()
 
         for _ in range(grad_accum_every):
+
+            torch.cuda.empty_cache()
             
             if self.unconditional:
                 real_images = next(dl_iter)
@@ -459,14 +454,16 @@ class GigaGAN(nn.Module):
                 assert isinstance(result, tuple), 'dataset should return a tuple of two items for text conditioned training, (images: Tensor, texts: List[str])'
                 real_images, texts = result
 
-                all_real_images.append(real_images)
-                all_texts.extend(texts)
+                del result
+
+                if has_matching_awareness:
+                    all_real_images.append(real_images)
+                    all_texts.extend(texts)
 
             # requires grad for real images, for gradient penalty
 
             with torch.enable_grad():
-                #real_images = real_images.to(self.device)
-                real_images = torch.tensor(real_images.clone().detach(), device=self.device, requires_grad=True)
+                real_images = real_images.clone().detach().requires_grad_(True)
 
             real_images_rgbs = self.unwrapped_D.real_images_to_rgbs(real_images)
 
@@ -492,8 +489,8 @@ class GigaGAN(nn.Module):
                     return_all_rgbs = True
                 )
 
-                all_fake_images.append(images)
-                all_fake_rgbs.append(rgbs)
+                #all_fake_images.append(images)
+                #all_fake_rgbs.append(rgbs)
 
                 # diff augment
 
@@ -511,7 +508,7 @@ class GigaGAN(nn.Module):
 
             # main divergence loss
 
-            with self.accelerator.autocast():
+            with self.accelerator.accumulate(self.G) and self.accelerator.accumulate(self.D) and self.accelerator.autocast():
 
                 fake_logits, fake_multiscale_logits, _ = self.D(
                     images,
@@ -577,6 +574,8 @@ class GigaGAN(nn.Module):
                     fake_vision_aided_logits = self.VD(images, **maybe_text_kwargs)
                     real_vision_aided_logits, clip_encodings = self.VD(real_images, return_clip_encodings = True, **maybe_text_kwargs)
 
+                    del real_images
+
                     for fake_logits, real_logits in zip(fake_vision_aided_logits, real_vision_aided_logits):
                         vd_loss = vd_loss + discriminator_hinge_loss(real_logits, fake_logits)
 
@@ -619,6 +618,7 @@ class GigaGAN(nn.Module):
 
             self.accelerator.backward(total_loss / grad_accum_every)
 
+        torch.cuda.empty_cache()
 
         # matching awareness loss
         # strategy would be to rotate the texts by one and assume batch is shuffled enough for mismatched conditions
@@ -667,6 +667,11 @@ class GigaGAN(nn.Module):
                     loss = matching_loss * self.matching_awareness_loss_weight
 
                 self.accelerator.backward(loss / grad_accum_every)
+
+        del real_images_rgbs
+        del real_images
+        del fake_logits
+        
         torch.cuda.empty_cache()
         self.D_opt.step()
         torch.cuda.empty_cache()
@@ -690,13 +695,15 @@ class GigaGAN(nn.Module):
         grad_accum_every = 1,
         calc_multiscale_loss = True
     ):
+        torch.cuda.empty_cache()
+
         total_divergence = 0.
         total_multiscale_divergence = 0. if calc_multiscale_loss else None
         total_vd_divergence = 0.
         contrastive_loss = 0.
 
         self.G.train()
-        self.D.train()
+        self.D.eval()
 
         self.D_opt.zero_grad()
         self.G_opt.zero_grad()
@@ -706,11 +713,13 @@ class GigaGAN(nn.Module):
 
         for _ in range(grad_accum_every):
 
+            torch.cuda.empty_cache()
+
             # generator
             
             G_kwargs, maybe_text_kwargs = self.generate_kwargs(dl_iter, batch_size)
 
-            with self.accelerator.autocast():
+            with self.accelerator.accumulate(self.G) and self.accelerator.accumulate(self.D) and self.accelerator.autocast():
                 images, rgbs = self.G(
                     **G_kwargs,
                     **maybe_text_kwargs,
@@ -741,16 +750,20 @@ class GigaGAN(nn.Module):
                 # generator hinge loss discriminator and multiscale
 
                 divergence = generator_hinge_loss(logits)
+                del logits
 
                 total_divergence += (divergence.item() / grad_accum_every)
 
                 total_loss = divergence
+
+                del divergence
 
                 if self.multiscale_divergence_loss_weight > 0. and len(multiscale_logits) > 0:
                     multiscale_divergence = 0.
 
                     for multiscale_logit in multiscale_logits:
                         multiscale_divergence = multiscale_divergence + generator_hinge_loss(multiscale_logit)
+                    del multiscale_logits
 
                     total_multiscale_divergence += (multiscale_divergence.item() / grad_accum_every)
 
@@ -765,15 +778,25 @@ class GigaGAN(nn.Module):
 
                     for logit in logits:
                         vd_loss = vd_loss + generator_hinge_loss(logit)
+                    del logits
 
                     total_vd_divergence += (vd_loss.item() / grad_accum_every)
 
                     total_loss = total_loss + vd_loss * self.vision_aided_divergence_loss_weight
 
+                    del vd_loss
+                
+                del images
+                del rgbs
+
             self.accelerator.backward(total_loss / grad_accum_every, retain_graph = self.need_contrastive_loss)
+
+            del total_loss
 
         # if needs the generator contrastive loss
         # gather up all images and texts and calculate it
+
+        torch.cuda.empty_cache()
 
         if self.need_contrastive_loss:
             all_images = torch.cat(all_images, dim = 0)
@@ -785,6 +808,9 @@ class GigaGAN(nn.Module):
             )
 
             self.accelerator.backward(contrastive_loss * self.generator_contrastive_loss_weight)
+
+        del all_images
+        del all_texts
 
         # generator optimizer step
 

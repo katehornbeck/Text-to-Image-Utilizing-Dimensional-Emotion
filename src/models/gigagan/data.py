@@ -125,6 +125,11 @@ class TextImageDataset(Dataset):
     def __getitem__(self, index):
         path = self.image_paths[index]
         img = Image.open(path)
+
+        if len(img.getbands()) != 3:
+            index = index+1
+            path = self.image_paths[index]
+            img = Image.open(path)
         
         # grab the corresponding csv containing the text
         csv = [x for x in self.text_paths if path.parent == x.parent][0]
