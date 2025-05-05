@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
