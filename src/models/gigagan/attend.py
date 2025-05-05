@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from functools import wraps
 from packaging import version
 from collections import namedtuple
