@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from __future__ import annotations
 
 from collections import namedtuple
