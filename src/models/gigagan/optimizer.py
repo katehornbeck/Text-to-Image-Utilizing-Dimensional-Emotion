@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from torch.optim import AdamW, Adam
 
 def separate_weight_decayable_params(params):
