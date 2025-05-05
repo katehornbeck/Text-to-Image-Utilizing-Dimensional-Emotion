@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
