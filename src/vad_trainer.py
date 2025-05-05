@@ -1,3 +1,5 @@
+# used but changed from https://github.com/SungjoonPark/EmotionDetection
+
 import os, pprint
 import torch
 from transformers import (
