@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from torch import nn
 
 from src.models.gigagan.attention import (TextAttention, FeedForward)
