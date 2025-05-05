@@ -1,3 +1,4 @@
+# used but changed from: https://github.com/SungjoonPark/EmotionDetection
 import numpy as np
 from scipy.stats import pearsonr
 from sklearn.metrics import (
