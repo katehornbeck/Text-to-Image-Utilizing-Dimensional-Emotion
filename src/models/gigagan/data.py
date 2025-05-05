@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from functools import partial
 from pathlib import Path
 import pandas as pd
