@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 import torch
 from torch import nn
 from einops.layers.torch import Rearrange
