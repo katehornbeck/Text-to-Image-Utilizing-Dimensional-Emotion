@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from beartype import beartype
 from beartype.typing import List, Tuple, Dict, Iterable
 from functools import partial
