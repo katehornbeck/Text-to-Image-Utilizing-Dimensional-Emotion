@@ -1,3 +1,5 @@
+# used but changed from: https://github.com/lucidrains/gigagan-pytorch
+
 from torch import nn, Tensor
 import torch.nn.functional as F
 import torch
